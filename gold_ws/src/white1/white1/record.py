@@ -467,9 +467,10 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
                #     gps_fix_course_deg : gps.py 가 원시 fix 로 낸 코스(σ 비례 문턱)
                #   ★둘을 나란히 보는 것이 진단에 쓸모 있다★ — 갈리면 문턱 차이가 원인이다.
                'gps_fix_course_deg',
-               # ── [2026-08-18 (3)] 이상치 게이트 + DEGRADED 융합 3종 ──
-               'gps_mode', 'gps_reject_n', 'gps_resid_m'),
-              _array(13),
+               # ── [2026-08-18 (3)] 이상치 게이트 기각 수 ──
+               #   [2026-11-05] gps_mode · gps_resid_m 은 DEGRADED 와 함께 지웠다 (13 → 11칸)
+               'gps_reject_n'),
+              _array(11),
               note='gps.py 후처리 좌표. quality 0없음/1SPS/2DGPS/3RTK_FLOAT/4RTK_FIXED '
                    '— ★status.status 로는 Float 과 Fixed 가 구별되지 않아서 σ 로 '
                    '갈라낸 것이다★. is_raw=0 은 IMU 로 메운 표본이고 그때 '
@@ -477,11 +478,7 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
                    'driving 의 GPS 두절 판정 기준(DR 로 메운 시간이 판정을 늦추지 '
                    '않도록 원시 fix 의 나이를 그대로 싣는다). '
                    '★gps_reject_n 이 늘어나는 구간이 GPS 가 튀는 구간이다★ — '
-                   'fix_lat/fix_lon(원값)과 겹쳐 보면 무엇을 버렸는지 보인다. '
-                   'gps_mode 0=NORMAL(fix 스냅) 1=DEGRADED(DR + 잔차 중앙값 융합). '
-                   'gps_resid_m 은 DEGRADED 에서 GPS 와 DR 의 불일치 크기 — '
-                   '★DEGRADED_RESID_MAX_M(3.0) 근처로 굳으면 DR 이 GPS 를 못 따라가는 '
-                   '것이므로 엔코더 환산(ENC_MS_PER_PULSE)이나 자이로를 의심할 것★'),
+                   'fix_lat/fix_lon(원값)과 겹쳐 보면 무엇을 버렸는지 보인다.'),
     TopicSpec('/imu', Imu,
               ('imu_quat_x', 'imu_quat_y', 'imu_quat_z', 'imu_quat_w',
                'imu_gyro_x', 'imu_gyro_y', 'imu_gyro_z',

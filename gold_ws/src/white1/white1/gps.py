@@ -1,26 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gps.py ― white1 GPS 후처리 [원시 /fix → 품질 판정 + 이상치 게이트 + DR 융합 → /gps_fused]
+gps.py ― white1 GPS 후처리 [원시 /fix → 품질 판정 + 이상치 게이트 + fix 사이 채움 → /gps_fused]
 ════════════════════════════════════════════════════════════════════════════════
     ros2 run white1 gps          (one_launch.py 가 띄운다)
 
-이 노드가 하는 일은 네 가지다.
+이 노드가 하는 일은 세 가지다.
 
   ① ★품질 판정★ — 지금 이 fix 가 RTK Fixed 인가 Float 인가 DGPS 인가.
      `status.status` 만으로는 ★Fixed 와 Float 이 구별되지 않는다★(아래 ①절).
   ② ★이상치 게이트★ — 말이 안 되는 fix 를 버린다. 물리·방향·품질 세 가지로 본다(②절).
-  ③ ★공백 메움★ — fix 사이의 빈 시간을 IMU 로 외삽해 제어 주기(20Hz)에 맞춘다(③절).
-  ④ ★품질 저하 구간 융합★ — status 가 계속 0/1(비RTK)이면 fix 하나하나를 그대로
-     믿지 않고, ★DR 로 굴러가면서 GPS 잔차의 중앙값만 따라간다★(④절).
+  ③ ★fix 사이 채움★ — 5Hz fix 사이의 빈 0.2초를 IMU·엔코더로 외삽해 제어 주기(20Hz)에
+     맞춘다(③절). ★GPS 가 끊기면 채우지 않는다★ — 다음 fix 가 제때 안 오면 발행을 멈춘다.
 
-★설계의 한 줄 요약 — 상태에 따라 GPS 를 믿는 방식이 다르다★
-    NORMAL   (RTK Fixed) : fix 가 오면 ★그 값으로 스냅★ 한다. 상시 보정 없음.
-    DEGRADED (비RTK 지속) : fix 로 ★DR 을 천천히 끌어당긴다★(잔차 중앙값 × 게인).
-어느 쪽이든 fix 사이는 IMU 가 메운다. 그래서 나가는 좌표는 언제나
-`앵커 + 그 뒤 흐른 시간만큼의 추측항법` 이고, 두 성분이 [is_raw]·[dr_dist_m] 로
+★[2026-11-05] 지운 것 (사용자 지시 '실제 주행 중 쓰는 것만 남긴다')★
+  · DEGRADED 모드(비RTK 가 이어질 때 잔차 중앙값 융합) — 기본 꺼짐이라 주행에 쓰이지 않았다.
+    /gps_fused 의 [10] mode · [12] resid_m 칸도 함께 지웠다(13 → 11칸).
+  · GPS 두절 중 추측항법 — 종전에는 마지막 fix 뒤 DR_MAX_S 1.0 s(fix 4개 누락)까지 메웠다.
+    지금은 fix 한 주기 + 여유(0.3 s)까지만 메우고, NO_FIX 가 오면 그 즉시 멈춘다.
+    driving 은 Fixed 가 아니거나 fix 가 끊기면 서서 기다린다(rtk_only — driving 상수절).
+
+★설계의 한 줄 요약★ fix 가 오면 ★그 값으로 스냅★ 한다. 상시 보정 없음.
+fix 사이 0.2초만 IMU·엔코더가 메운다. 그래서 나가는 좌표는 언제나
+`앵커(마지막 fix) + 그 뒤 흐른 시간만큼의 추측항법` 이고, 두 성분이 [is_raw]·[dr_dist_m] 로
 분리되어 나간다. ★상시 칼만필터가 아니다★ — 구 white 의 gps_imu.py 처럼 항상
-융합하지 않는다. Fixed 일 때는 GPS 가 이기고, 그 판단이 코드 한 줄로 드러난다.
+융합하지 않는다. GPS 가 이기고, 그 판단이 코드 한 줄로 드러난다.
 
 ────────────────────────────────────────────────────────────────────────────────
  ★① status.status 로는 RTK Fixed 와 Float 을 구별할 수 없다 (실제 드라이버 확인)★
@@ -115,6 +119,8 @@ gps(위치) → driving(헤딩 추정) 순환이 생긴다. 대신 ★GPS 코스
 
 ★한도 3개 — 넘으면 메우지 않는다★
   · DR_MAX_S      : 마지막 fix 로부터 이 시간까지만 메운다. 넘으면 ★발행을 멈춘다★
+                    ★[2026-11-05] 1.0 → 0.3 s★ — fix 한 주기(0.2 s) + 도착 흔들림 여유.
+                    fix 사이만 메우고, fix 가 하나라도 늦으면 GPS 두절로 보고 채우지 않는다.
   · DR_MAX_DIST_M : 누적 외삽 거리 상한(속도 오독으로 가상좌표가 날아가는 것 차단)
   · IMU 신선도    : IMU 가 낡았으면 메우지 않는다. '방향은 IMU 가 만든다'는 전제가
                     깨진 상태에서 코스 방향으로 직진 외삽하면 코너에서 크게 틀린다.
@@ -128,51 +134,13 @@ driving 은 '이 배열이 도착한 시각'이 아니라 ★원시 fix 의 나�
 ★품질이 Q_NONE 이면 발행하지 않는다 (종전 동작을 의도적으로 바꿨다)★
 종전 driving.cb_fix 는 status 를 위치 수용에 쓰지 않아서, NO FIX 해(解)가 와도
 x/y 를 갱신하고 fix_time 까지 리셋했다 → 두절도 아니고 좌표는 쓰레기인 채로 추종이
-계속됐다. 여기서는 아예 내보내지 않는다 → driving 은 2초 뒤 두절로 판단해 선다.
-
-────────────────────────────────────────────────────────────────────────────────
- ★④ DEGRADED 모드 — 비RTK 가 지속될 때 (2026-08-18 (3) 신설)★
-────────────────────────────────────────────────────────────────────────────────
-status 가 계속 0(SPS)·1(DGPS)·또는 Float 이면, fix 하나하나는 수십 cm~수 m 로 튄다.
-그때 ★스냅은 최악의 선택★ 이다 — 튐이 그대로 조향에 실린다. 반대로 ★순수 DR 만★
-쓰는 것도 안 된다 — 자이로 드리프트와 바퀴 지름 오차가 몇 초면 쌓인다.
-
-그래서 둘을 나눠 맡긴다:
-    ★단기 운동(어디로 얼마나 갔나)★  → DR (IMU 방향 + 엔코더 거리). 매끄럽다.
-    ★장기 위치(절대 어디인가)★      → GPS. 단, 개별 fix 가 아니라 ★평균★ 으로.
-
-구체적으로, 매 fix 마다 ★잔차★ 를 본다 :
-        잔차 = fix 좌표 − (앵커 + 그때까지의 DR)
-그리고 최근 DEGRADED_RESID_WIN 개 잔차의 ★중앙값★ 을 DEGRADED_RESID_GAIN 만큼만
-따라간다. 상한은 DEGRADED_RESID_MAX_M.
-
-  ★왜 좌표를 직접 평균하지 않고 '잔차'를 평균하는가 — 차가 움직이기 때문이다★
-  3.5 m/s 로 달리는 중에 1초치 좌표를 평균하면 3.5m 뒤처진 점이 나온다. 뜻이 없다.
-  DR 이 그 운동을 이미 설명하므로, 남는 잔차는 ★운동이 빠진 순수 위치오차★ 다.
-  그것만 평균하면 '차가 움직이는 것'과 'GPS 가 튀는 것'이 깔끔히 분리된다.
-  사용자가 말한 "IMU 가 바라보는 방향이 있으니 GPS 위치를 찍기 편하다"가 이 구조다.
-
-  ★평균이 아니라 중앙값이다★ 평균은 한 표본이 5m 튀면 그 1/N 만큼 끌려간다.
-  중앙값은 소수의 극단값에 전혀 반응하지 않는다 — 지금 막으려는 것이 정확히
-  '한두 표본의 큰 튐'이므로 중앙값이 맞는 도구다.
-
-  ★게인의 뜻★ 0.30 · 5Hz 면 시상수 ≈ 0.67초다. 느리게 따라가는 게 아니라,
-  ★한 표본이 전부를 끌고 가지 못하게★ 하는 것이 목적이다(중앙값 창 2초 + 게인).
-
-진입·복귀는 ★양방향 모두 지속 조건★ 을 요구한다(채터 방지):
-    NORMAL → DEGRADED : 품질 미달이 DEGRADED_ENTER_S 지속
-    DEGRADED → NORMAL : Fixed 가 DEGRADED_EXIT_S 지속 → ★그 fix 로 스냅★
+계속됐다. 여기서는 아예 내보내지 않는다 → driving 은 두절로 판단해 선다.
+★[2026-11-05] NO_FIX 가 오면 채움도 그 즉시 멈춘다★ — 종전에는 NO_FIX 를 받은 뒤에도
+타이머가 DR_MAX_S 동안 quality 0 이 적힌 DR 표본을 계속 냈다(위 '발행하지 않는다' 와 어긋났다).
 
 ⚠️ ★경로에 붙이는 보정(map matching)은 여기서 하지 않는다★ 이 노드는 경로를 모르고,
   알아야 할 이유도 없다. 그리고 그건 driving 의 경로이탈 감지(CTE 2m)를 무력화한다 —
-  진짜로 벗어났는데 계산상 경로에 붙어 있게 되기 때문이다. 하려면 driving 쪽에서,
-  이탈 감지에는 보정 전 원값을 쓰도록 분리해서 해야 한다.
-
-⚠️ ★카메라 융합은 아직 없다★ GPS 가 완전히 끊긴 구간은 지금도 '발행 중지 → driving
-  이 정지'로 끝난다. 카메라(차선 기반 횡보정)를 붙이면 그 구간을 이어 갈 수 있고,
-  그때 손댈 곳은 ④절의 잔차 소스뿐이다 — DR 에 GPS 잔차를 먹이는 자리에 카메라
-  잔차를 같은 방식으로 얹으면 된다(구 white 의 CAM_LAT_* 가 그 구조였다).
-  ★그래서 이번 구조를 '잔차를 먹인다'로 만들어 두었다★ — 소스를 바꿔 끼울 수 있다.
+  진짜로 벗어났는데 계산상 경로에 붙어 있게 되기 때문이다.
 
 ────────────────────────────────────────────────────────────────────────────────
  매핑은 이 노드를 거치지 않는다
@@ -184,7 +152,7 @@ mapping.py 는 ★그대로 /fix 원값★ 을 받는다(사용자 결정). 경�
 ────────────────────────────────────────────────────────────────────────────────
  /gps_fused 배열 규약  ★이 목록이 계약이다 — 순서를 바꾸면 record 열이 밀린다★
 ────────────────────────────────────────────────────────────────────────────────
-  [0] lat_deg      가상좌표 위도  (앵커 + DR, DEGRADED 면 잔차보정 포함)
+  [0] lat_deg      가상좌표 위도  (앵커 + DR)
   [1] lon_deg      가상좌표 경도
   [2] quality      0=NONE 1=SPS 2=DGPS 3=RTK_FLOAT 4=RTK_FIXED
   [3] sigma_m      수평 1σ [m]. DR 중에는 경과시간만큼 팽창시킨다(★추정값★)
@@ -194,41 +162,14 @@ mapping.py 는 ★그대로 /fix 원값★ 을 받는다(사용자 결정). 경�
   [7] dr_dist_m    이 표본에서 DR 이 외삽한 거리 [m]  (0=메우지 않았다)
   [8] gps_kmh      원시 fix 변위 속도 [km/h]. NaN=아직 없음
   [9] course_deg   마지막 유효 GPS 코스 [deg]. NaN=아직 없음
-  [10] mode        0=NORMAL(스냅) 1=DEGRADED(잔차 중앙값 융합)     ← [2026-08-18 (3)]
-  [11] reject_n    누적 게이트 기각 수. ★늘어나는 구간이 튀는 구간이다★
-  [12] resid_m     DEGRADED 잔차 중앙값의 크기 [m] = GPS 와 DR 의 불일치
+  [10] reject_n    누적 게이트 기각 수. ★늘어나는 구간이 튀는 구간이다★
+                   ([2026-11-05] 종전 [11]. [10] mode · [12] resid_m 은 DEGRADED 와 함께 지웠다)
 
 값이 없을 때는 ★전부 NaN★ 으로 통일한다(-1 같은 파수꾼 값을 쓰지 않는다 — 각
 소비처가 그 규약을 따로 기억해야 하고, 한 곳이 잊으면 -1 이 실측값처럼 흘러간다).
 
-────────────────────────────────────────────────────────────────────────────────
- ★남은 일 — DEGRADED 융합을 살리려면 '방향의 출처'를 바꿔야 한다★
-────────────────────────────────────────────────────────────────────────────────
-지금 DR 의 절대 방향은 ★GPS 변위(코스)★ 다. 비RTK 구간에서는 잡음이 한 샘플 이동보다
-커서 그 변위에 방향 정보가 없고, 그래서 융합이 케이스마다 흔들린다(DEGRADED_ENABLE
-주석의 실측). 문턱 조정으로는 해결되지 않는다 — ★없는 정보를 짜낼 수는 없다★.
-방향의 출처를 바꾸는 세 가지 길이 있고, 어느 하나가 생기면 융합을 그대로 켜면 된다:
-
-  ① ★driving 의 확정 헤딩을 받는다★ (작업량 작음, 순환 주의)
-     driving 은 출발 직진 구간에서 직진성 잔차까지 검사해 헤딩을 확정하고
-     (HeadingEstimator) 이후 자이로 적분 + 코스 융합으로 유지한다 — 이미 우리보다
-     좋은 값을 들고 있다. 그것을 토픽으로 받으면 된다.
-     ⚠️ 단 driving 의 헤딩은 ★이 노드가 준 위치★ 로 만들어진다 → 순환이다. 끊는 법:
-        헤딩은 DEGRADED 진입 ★직전(Fixed 구간)★ 값만 쓰고 그 뒤로는 자이로만 얹는다.
-        즉 '지금 헤딩'이 아니라 '마지막으로 믿을 수 있었던 헤딩'을 받는 것이다.
-
-  ② ★자이로 바이어스 보정★ (작업량 중간)
-     ①이든 지금 구조든, 몇 초 이상 자이로만 쓰면 바이어스가 각도로 쌓인다. 정지 중
-     (엔코더 0 · GPS 변위 0)에 gyro_z 를 저역통과로 모아 두면 그 바이어스를 뺄 수 있다
-     — 구 white/gps_imu.py 가 하던 것이고 여기엔 아직 없다.
-
-  ③ ★듀얼 안테나 (moving baseline / GNSS heading)★ (하드웨어, 근본 해결)
-     안테나 두 개면 수신기가 방향을 직접 준다. 헤딩 초기화·자이로 드리프트·이 절의
-     문제가 통째로 사라진다. 자율주행 농기계가 거의 다 이 방식이다.
-
-★게이트는 이 문제와 무관하게 이미 값을 낸다★ 물리 게이트는 방향을 쓰지 않고, 방향
-게이트는 σ 문턱으로 Fixed 전용이 되어 있다. 그래서 게이트만 ON 인 현재 설정에서도
-단발 튐은 잡힌다(폐루프 시뮬: 8m 튐 4회 섞인 구간의 최대오차 8.95m → 1.80m).
+★게이트의 효과★ 물리 게이트는 방향을 쓰지 않고, 방향 게이트는 σ 문턱으로 Fixed 전용이
+되어 있다. 단발 튐은 이것으로 잡힌다(폐루프 시뮬: 8m 튐 4회 섞인 구간의 최대오차 8.95m → 1.80m).
 """
 
 import math
@@ -248,7 +189,7 @@ from std_msgs.msg import Float64MultiArray, Int32, String
 # ══════════════════════════════════════════════════════════════════════════════
 GPS_FUSED_TOPIC   = '/gps_fused'
 GPS_QUALITY_TOPIC = '/gps_quality'
-GPS_FUSED_FIELDS  = 13          # record.py 의 _array(n) 와 맞춘다
+GPS_FUSED_FIELDS  = 11          # record.py 의 _array(n) 와 맞춘다 ([2026-11-05] 13 → 11)
 
 Q_NONE  = 0     # fix 없음 / 좌표 무효 — ★이 값은 발행되지 않는다★(위 헤더 참고)
 Q_SPS   = 1     # GGA q1. 보정 없는 단독측위. 오차 수 m
@@ -262,9 +203,6 @@ Q_LABEL = {Q_NONE:  'NO_FIX',
            Q_FLOAT: 'RTK_FLOAT',
            Q_FIXED: 'RTK_FIXED'}
 Q_EMOJI = {Q_NONE: '❌', Q_SPS: '🟡', Q_DGPS: '🟠', Q_FLOAT: '🔵', Q_FIXED: '🟢'}
-
-M_NORMAL, M_DEGRADED = 0, 1     # [10] mode
-M_LABEL = {M_NORMAL: 'NORMAL', M_DEGRADED: 'DEGRADED'}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -324,7 +262,7 @@ GATE_SIGMA_SQRT2  = 1.41421356
 #   그 거리에는 ★직전 fix 의 잡음과 지금 fix 의 잡음이 모두★ 들어간다. 독립이므로
 #   합의 표준편차는 σ√2 다. 이걸 빼먹으면 게이트가 실제 산포보다 좁아져 ★정상 fix 를
 #   버린다★ — 폐루프 시뮬에서 σ=1 짜리 DGPS 구간의 fix 를 절반(28/58) 기각했고,
-#   그 결과 DEGRADED 융합이 데이터를 굶어 오차가 오히려 81% 악화됐다(수정 전 실측).
+#   그 결과 위치가 낡아 오차가 오히려 81% 악화됐다(수정 전 실측).
 GATE_SIGMA_CAP_M  = 5.00   # [m] 그 잡음 몫의 상한 — ★없으면 Float 에서 게이트가 죽는다★
 #   σ 가 4m 까지 나오는 Float 에서 3σ√2 를 그대로 쓰면 17m 까지 열려 무력해진다.
 #   5.0 은 'DGPS(σ≈1) 산포는 통과시키고 그보다 큰 것은 잡는다'로 정한 값이다:
@@ -360,57 +298,19 @@ DIR_SIGMA_K = 6.0
 #  ★'잡음이 크면 방위 판정을 포기한다'가 맞는 답이다★ — 억지로 판정하면 정상을 버리고,
 #  그 대가로 위치가 낡아 ★최대오차가 오히려 커진다★(실측 -77%).
 COURSE_SIGMA_K = 6.0
-#  ★★ 코스 문턱은 게이트 문턱과 ★반드시 분리★ 해야 한다 ★★
-#  둘 다 '방위를 믿을 수 있나'를 묻지만 ★틀렸을 때의 대가가 정반대★ 다:
-#     · 게이트 : 판정을 포기하면 그 fix 를 받아들인다 = ★안전한 실패★ → 문턱을 크게(6.0)
-#     · 코스   : 갱신을 포기하면 방향이 낡는다. COURSE_STALE_S(3초)를 넘으면 ★DR 이
-#                아예 멈추고★, DR 이 멈추면 DEGRADED 잔차에서 운동이 제거되지 않아
-#                ★융합이 통째로 무너진다★ = ★위험한 실패★ → 문턱을 작게(2.0)
-#  ★두 값을 하나로 묶었다가 실측으로 잡았다★ 6.0 을 코스에도 쓰자 σ=1.0~1.5 에서
-#  코스 갱신에 6~9m 이동이 필요해졌고, 그 사이 코스가 낡아 DR 이 죽었다. 그 결과
-#  DEGRADED 융합이 케이스에 따라 ★-140% ~ -206% 로 악화★ 됐다(그 전 실행에서는
-#  같은 케이스가 +22~35% 였다). 문턱 하나를 공유한 것이 원인이었다.
-#  ★★ 그런데 이 값에는 '좋은 값'이 없다 — 그것이 DEGRADED 융합을 끈 이유다 ★★
-#  2.0 으로 내려 코스를 살리자 이번엔 ★코스가 잡음으로 갱신돼 DR 방향이 배회★ 했고,
-#  게이트까지 함께 나빠졌다(백색 σ=0.5·1.0 에서 최대오차 -20%/-12%). 6.0 으로 올리면
-#  게이트는 좋아지지만 코스가 낡아 융합이 무너진다. ★양쪽을 동시에 만족하는 값이 없다★
-#      COURSE_SIGMA_K   게이트 최대오차     융합 최대오차
-#            2.0          -20% / -12%      -116% / -105%
-#            6.0          +12% /  +3%      (코스 낡음 → 케이스별 -140~-206%)
-#  근본 원인은 ★비RTK 구간에서 GPS 변위로 절대 방향을 얻으려는 것 자체★ 다. 잡음이
-#  이동보다 크면 그 안에 방향 정보가 없다 — 문턱을 어디에 두든 마찬가지다.
-#  → 지금은 ★게이트를 살리는 쪽(6.0)★ 으로 두고 융합을 끈다. 융합을 되살리려면
-#    방향의 출처를 바꿔야 한다(맨 아래 '남은 일' 참고). 그때 만질 곳이 여기다.
+#  코스 갱신에 필요한 변위 = max(COURSE_MIN_STEP_M, COURSE_SIGMA_K · σ).
+#  ★잡음이 이동보다 크면 그 변위에 방향 정보가 없다★ — 그때 갱신하면 채움(DR)의 방향이
+#  잡음을 따라 배회한다. Fixed(σ 0.02)면 0.30 m 그대로라 코너를 따라가고, σ 가 큰 비RTK 면
+#  갱신을 미룬다(그동안은 자이로가 방향을 잇는다). 비RTK 에서는 driving 이 서서 기다리므로
+#  (rtk_only) 실제 주행에서 이 문턱이 갈리는 것은 Fixed 구간뿐이다.
 
-# ── ★DEGRADED 모드★ [2026-08-18 (3) 신설] 근거는 파일 헤더 ④절 ────────────────────
-DEGRADED_ENABLE      = False
-#  ★★ 기본 OFF — ★폐루프 시뮬에서 케이스마다 결과가 갈렸다★ ★★
-#  잔차 중앙값 융합 자체는 의도대로 동작한다(상관 편향에서 평균 +24~36%, p95 +15~21%).
-#  그런데 ★최대오차★ 가 케이스에 따라 +84% ~ −116% 로 흔들린다. 추종 제어에서 중요한
-#  것은 최대오차다 — 그것이 CTE 스파이크와 조향 급변을 만든다. 평균을 얻고 최대를
-#  잃는 거래는 이 차에 맞지 않는다.
-#  ★원인은 이 모듈의 구조적 한계다 (COURSE_SIGMA_K 주석의 표 참고)★
-#  DR 의 방향 기준을 ★GPS 변위(코스)★ 에서 얻는데, 비RTK 구간에서는 잡음이 한 샘플
-#  이동보다 커서 그 변위에 방향 정보가 없다. 방향이 틀리면 DR 이 엉뚱하게 굴러가고,
-#  잔차 융합은 그 위에 얹히므로 같이 틀어진다. 문턱을 어떻게 잡아도 해결되지 않는다.
-#  ★그래도 코드를 남겨 둔 이유★ ⓐ 게이트만으로 이미 큰 튐은 잡힌다(단발 8m 기준
-#  최대오차 +80%) ⓑ 방향의 출처가 좋아지면 이 융합은 그대로 살아난다 — 파일 맨 아래
-#  '남은 일' 의 세 가지 중 하나가 되면 켜면 된다.
-#  켜 보려면 : ros2 param set /gps_node degraded_enable true  (로그의 gps_resid_m 확인)
-DEGRADED_ENTER_S     = 1.0   # [s] 품질 미달이 이만큼 지속되면 진입
-DEGRADED_EXIT_S      = 2.0   # [s] Fixed 가 이만큼 지속되면 복귀(복귀는 더 신중하게)
-DEGRADED_RESID_WIN   = 10    # 잔차 중앙값 표본 수 (5Hz 면 2초 창)
-DEGRADED_RESID_GAIN  = 0.30  # 중앙값의 이 비율만 따라간다 (5Hz 에서 시상수 ≈0.67s)
-DEGRADED_RESID_MAX_M = 3.0   # [m] 한 번에 적용하는 보정 상한(폭주 방지)
-#   ⚠️ 상한에 계속 붙어 있으면 DR 이 GPS 를 못 따라가고 있다는 뜻이다 — 로그의
-#     resid_m 이 이 값 근처로 굳으면 엔코더 환산(MS_PER_PULSE)이나 자이로를 의심할 것.
-
-# ── 추측항법(DR) ──
+# ── fix 사이 채움(DR) ──
 DR_ENABLE       = True
-DR_MAX_S        = 1.0    # [s] 이 시간까지만 메운다. 넘으면 발행 중지(헤더 ③절 참고)
-#   5Hz 정상이면 공백은 0.2초다. 1.0 은 fix 를 4번 연속 놓친 경우까지 버티는 값이고,
-#   driving 의 GPS_TIMEOUT_S(2.0) 보다 충분히 작아서 두절 감지를 가리지 않는다.
-DR_MAX_DIST_M   = 3.0    # [m] 누적 외삽 거리 상한. 4.42m/s × 1.0s = 4.4m 라 이쪽이 먼저 걸린다
+DR_MAX_S        = 0.3    # [s] 마지막 fix 로부터 이 시간까지만 메운다. 넘으면 발행 중지(헤더 ③절)
+#   ★[2026-11-05] 1.0 → 0.3 (사용자 지시 'GPS 가 끊길 때 추측항법으로 달리는 코드는 지운다')★
+#   5Hz 정상이면 공백은 0.2초다. 0.3 은 그 한 주기 + 도착 흔들림 0.1 s 다 — fix 사이만 메우고,
+#   fix 가 하나라도 늦으면 더 외삽하지 않는다. 종전 1.0 은 fix 를 4번 연속 놓친 경우까지 버텼다.
+DR_MAX_DIST_M   = 3.0    # [m] 누적 외삽 거리 상한(속도 오독 방어). 0.3 s 면 36 km/h 에서도 3.0 m 다
 DR_MIN_MS       = 0.14   # [m/s] 이 밑이면 '안 움직인다'로 보고 적분하지 않는다(0.5km/h)
 DR_MAX_STEP_S   = 0.5    # [s] 한 번의 적분 스텝이 이보다 크면 버린다(타이머 스톨 후 튐 방지)
 DR_IMU_FRESH_S  = 0.3    # [s] IMU 가 이보다 낡았으면 메우지 않는다
@@ -495,14 +395,6 @@ def xy_to_latlon(x, y, lat0, lon0):
     return lat, lon
 
 
-def _median(vals):
-    s = sorted(vals)
-    n = len(s)
-    if n == 0:
-        return 0.0
-    return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  노드
 # ══════════════════════════════════════════════════════════════════════════════
@@ -554,12 +446,6 @@ class GpsNode(Node):
         self.declare_parameter('pub_hz', PUB_HZ)
         self.declare_parameter('rtk_fixed_sigma_m', RTK_FIXED_SIGMA_M)
         self.declare_parameter('gate_enable', GATE_ENABLE)
-        self.declare_parameter('degraded_enable', DEGRADED_ENABLE)
-        #   ★degraded_below : 이 품질 미달이 지속되면 DEGRADED 로 간다★
-        #   기본 Q_FIXED = 'Fixed 가 아니면 전부'(Float·DGPS·SPS). 사용자가 말한
-        #   "status 1 과 0" 만 잡고 싶으면 Q_FLOAT(3) 으로 내린다 — 그러면 Float 은
-        #   종전처럼 스냅한다. ⚠️ Float 은 σ 가 수 m 라 스냅하면 그 튐이 조향에 실린다.
-        self.declare_parameter('degraded_below', Q_FIXED)
 
         self.min_quality = int(self.get_parameter('min_quality').value)
         self.dr_enable   = bool(self.get_parameter('dr_enable').value)
@@ -567,31 +453,20 @@ class GpsNode(Node):
         self.pub_hz      = max(1.0, float(self.get_parameter('pub_hz').value))
         self.fixed_sigma = max(0.0, float(self.get_parameter('rtk_fixed_sigma_m').value))
         self.gate_enable = bool(self.get_parameter('gate_enable').value)
-        self.deg_enable  = bool(self.get_parameter('degraded_enable').value)
-        self.deg_below   = int(self.get_parameter('degraded_below').value)
 
-        # ── 앵커 (발행 좌표의 기준점) ★[2026-08-18 (3)] fix 좌표에서 앵커로 바뀌었다★
-        #   NORMAL   : 마지막으로 수용한 fix 좌표 그대로(스냅)
-        #   DEGRADED : DR 예측 + 잔차 중앙값 × 게인 (잔차 융합)
-        #   이 구조 덕분에 잔차 소스를 바꿔 끼울 수 있다(헤더 ④절의 카메라 융합 메모).
+        # ── 앵커 (발행 좌표의 기준점) = 마지막으로 수용한 fix 좌표 그대로(스냅) ──
         self.lat0 = self.lon0 = None    # 내부 평면 원점(첫 유효 fix)
         self._ax = self._ay = 0.0        # 앵커 좌표
         self._fix_t = 0.0                # 마지막 ★수용된★ fix 시각. 0 = 아직 없음
         self._quality = Q_NONE
         self._sigma = float('nan')
+        self._no_fix = False             # ★[2026-11-05] NO_FIX 를 받았다 → 다음 수용 fix 까지 채우지 않는다★
 
         # ── 게이트 상태 ──
         self._last_ok_x = self._last_ok_y = 0.0   # 마지막 수용 fix (물리 게이트 기준)
         self._last_ok_t = 0.0
         self._reject_n = 0               # 누적 기각 수(진단)
         self._reject_run = 0             # ★연속★ 기각 수(탈출구 판정)
-
-        # ── 모드 상태 ──
-        self._mode = M_NORMAL
-        self._q_good_since = 0.0         # 품질이 충족된 이후 경과 기준시각
-        self._q_bad_since = 0.0
-        self._resid = []                 # [(dx, dy)] 최근 잔차
-        self._resid_m = 0.0              # 잔차 중앙값 크기(진단)
 
         # ── GPS 변위 속도 ──
         self._trail = []                 # [(t, x, y)] 최근 GPS_SPEED_WIN 표본
@@ -643,9 +518,7 @@ class GpsNode(Node):
             f"white1 gps 준비 — {GPS_FUSED_TOPIC} {self.pub_hz:.0f}Hz | "
             f"min_quality={Q_LABEL.get(self.min_quality, '?')} | "
             f"게이트={'ON' if self.gate_enable else 'OFF'} | "
-            f"DEGRADED={'ON' if self.deg_enable else 'OFF'}"
-            f"(<{Q_LABEL.get(self.deg_below, '?')}) | "
-            f"DR={'ON' if self.dr_enable else 'OFF'}(≤{self.dr_max_s:.1f}s) | "
+            f"fix 사이 채움={'ON' if self.dr_enable else 'OFF'}(≤{self.dr_max_s:.2f}s) | "
             f"Fixed 문턱 σ≤{self.fixed_sigma:.2f}m")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -658,7 +531,10 @@ class GpsNode(Node):
 
         if quality == Q_NONE:
             # 위치를 내보내지 않는다 — 그러면 driving 이 두절로 판단해 선다.
+            # ★[2026-11-05] 채움도 멈춘다★ — 수신기가 해를 잃었다고 말했으니 GPS 두절이다.
+            #   종전에는 타이머가 DR_MAX_S 동안 quality 0 이 적힌 DR 표본을 계속 냈다.
             self._quality, self._sigma = quality, sigma
+            self._no_fix = True
             self._log_quality(now, force=False)
             return
 
@@ -691,28 +567,23 @@ class GpsNode(Node):
         if self._reject_run > 0:
             # ★연속 기각 뒤의 첫 수용은 '진짜 위치가 점프했다'로 보는 것이 맞다★
             #   그러니 그 점프를 운동으로 오해할 이력을 전부 버린다 — 안 버리면
-            #   ⓐ 변위 속도가 점프 크기만큼 폭등하고 ⓑ 코스가 점프 방향으로 뒤집히고
-            #   ⓒ DEGRADED 잔차 창이 점프 전 기준으로 계산된 값을 계속 물고 있다.
+            #   ⓐ 변위 속도가 점프 크기만큼 폭등하고 ⓑ 코스가 점프 방향으로 뒤집힌다.
             self.get_logger().warning(
                 f"↩️ fix {'★탈출구★ 강제수용' if forced else '재수용'} — 연속 "
                 f"{self._reject_run}회 기각 뒤 복귀({why or '게이트 통과'}). "
-                f"코스·속도·잔차 이력을 버리고 이 좌표로 재설정한다")
+                f"코스·속도 이력을 버리고 이 좌표로 재설정한다")
             self._trail = []
             self._kmh = None
             self._course = None
             self._course_pt = None
-            self._resid = []
-            self._resid_m = 0.0
             self._reject_run = 0
-            # ★강제수용은 스냅이다★ 점프한 좌표에 DEGRADED 잔차 융합을 걸면 게인
-            #   0.3 으로 몇 초에 걸쳐 기어가게 된다 — 그동안 좌표가 틀린 채로 달린다.
-            #   게이트가 졌다고 인정한 순간에는 GPS 를 그대로 믿는 편이 맞다.
+            # ★강제수용은 스냅이다★ 게이트가 졌다고 인정한 순간에는 GPS 를 그대로 믿는다.
             if forced:
                 self._accept_normal(x, y, now)
                 self._last_ok_x, self._last_ok_y, self._last_ok_t = x, y, now
                 self._fix_t = now
+                self._no_fix = False
                 self._quality, self._sigma = quality, sigma
-                self._update_mode(now, quality)
                 self._publish(now, is_raw=True)
                 self._log_quality(now, force=True)
                 return
@@ -720,15 +591,12 @@ class GpsNode(Node):
         self._update_speed(now, x, y)
         self._update_course(x, y, now, sigma)
 
-        # ── 모드 판정 → 앵커 갱신 ──────────────────────────────────────────────
-        self._update_mode(now, quality)
-        if self._mode == M_DEGRADED:
-            self._accept_degraded(x, y, now)
-        else:
-            self._accept_normal(x, y, now)
+        # ── 앵커 갱신 = 스냅 ──────────────────────────────────────────────────
+        self._accept_normal(x, y, now)
 
         self._last_ok_x, self._last_ok_y, self._last_ok_t = x, y, now
         self._fix_t = now
+        self._no_fix = False
         self._quality, self._sigma = quality, sigma
 
         self._publish(now, is_raw=True)
@@ -878,89 +746,17 @@ class GpsNode(Node):
 
         return True, ''
 
-    def _update_mode(self, now, quality):
-        """품질 지속시간으로 NORMAL ↔ DEGRADED 를 전환한다. 근거는 헤더 ④절."""
-        good = quality >= self.deg_below
-        if good:
-            self._q_bad_since = 0.0
-            if self._q_good_since == 0.0:
-                self._q_good_since = now
-        else:
-            self._q_good_since = 0.0
-            if self._q_bad_since == 0.0:
-                self._q_bad_since = now
-
-        if not self.deg_enable:
-            self._mode = M_NORMAL
-            return
-
-        if self._mode == M_NORMAL:
-            if (not good and self._q_bad_since > 0.0
-                    and now - self._q_bad_since >= DEGRADED_ENTER_S):
-                self._mode = M_DEGRADED
-                self._resid = []
-                self._resid_m = 0.0
-                self.get_logger().warning(
-                    f"🔶 DEGRADED 진입 — {Q_LABEL.get(quality)} 가 "
-                    f"{now - self._q_bad_since:.1f}초 지속. fix 스냅을 멈추고 "
-                    f"DR + 잔차 중앙값 융합으로 간다")
-        else:
-            if (good and self._q_good_since > 0.0
-                    and now - self._q_good_since >= DEGRADED_EXIT_S):
-                self._mode = M_NORMAL
-                self._resid = []
-                self._resid_m = 0.0
-                self.get_logger().info(
-                    f"🟢 NORMAL 복귀 — {Q_LABEL.get(quality)} 가 "
-                    f"{now - self._q_good_since:.1f}초 지속. fix 스냅으로 되돌린다")
-
     # ══════════════════════════════════════════════════════════════════════════
     #  앵커 갱신
     # ══════════════════════════════════════════════════════════════════════════
     def _accept_normal(self, x, y, now):
-        """NORMAL — ★fix 로 그냥 스냅한다★ (블렌딩 없음)
+        """★fix 로 그냥 스냅한다★ (블렌딩 없음)
 
         이 한 줄이 '상시 보정을 하지 않는다'는 설계가 코드로 드러나는 지점이다.
         RTK Fixed 는 2cm 라, 그것보다 나은 추정을 우리가 만들 수 없다.
         """
         self._ax, self._ay = x, y
         self._reset_dr(now)
-
-    def _accept_degraded(self, x, y, now):
-        """DEGRADED — ★DR 예측을 GPS 잔차 중앙값으로 조금씩 끌어당긴다★ (헤더 ④절)
-
-        잔차 = fix − (앵커 + DR).  DR 이 차의 운동을 이미 설명하므로 남는 잔차는
-        ★운동이 빠진 순수 위치오차★ 다. 그것의 중앙값만 게인만큼 따라간다 —
-        중앙값이라 한두 표본이 크게 튀어도 끌려가지 않는다.
-        """
-        self._advance_dr(now)                     # 이 fix 시점까지 DR 을 밀어 둔다
-        px, py = self._ax + self._dr_x, self._ay + self._dr_y
-
-        self._resid.append((x - px, y - py))
-        if len(self._resid) > DEGRADED_RESID_WIN:
-            del self._resid[0]
-        mx = _median([r[0] for r in self._resid])
-        my = _median([r[1] for r in self._resid])
-        self._resid_m = math.hypot(mx, my)
-
-        # 게인 + 상한. 상한은 '한 번에 이만큼 이상 옮기지 않는다'는 뜻이다.
-        cx, cy = mx * DEGRADED_RESID_GAIN, my * DEGRADED_RESID_GAIN
-        c = math.hypot(cx, cy)
-        if c > DEGRADED_RESID_MAX_M:
-            k = DEGRADED_RESID_MAX_M / c
-            cx, cy = cx * k, cy * k
-
-        # 새 앵커 = 지금 추정 + 보정.  DR 은 여기서 0 으로 되돌린다.
-        self._ax, self._ay = px + cx, py + cy
-        self._reset_dr(now)
-
-        # ★★ 창을 새 기준으로 다시 맞춘다 (rebase) ★★
-        # ★이게 없으면 필터가 수렴하지 않는다 — 폐루프 시뮬로 잡았다★
-        # 창에 남아 있는 잔차들은 ★보정 전 앵커★ 를 기준으로 측정된 값이다. 앵커를
-        # cx 만큼 옮겼으면 그 값들도 그만큼 옛것이 된다. 그대로 두면 다음 틱의 중앙값이
-        # ★이미 처리한 오차를 다시 보고★ 또 같은 방향으로 보정하게 된다(이중 계산).
-        # 실측: rebase 없이는 잔차가 0.9~1.3m 에서 굳어 융합이 스냅보다 27% 나빴다.
-        self._resid = [(rx - cx, ry - cy) for rx, ry in self._resid]
 
     def _reset_dr(self, now):
         """앵커가 바뀌었으니 그로부터의 외삽 변위를 0 으로.
@@ -1052,9 +848,9 @@ class GpsNode(Node):
         if now - self._last_pub_t < 1.0 / self.pub_hz * 0.5:
             return                       # 방금 원시 fix 로 냈다 — 중복 발행 방지
 
-        # ★DR 한도를 넘으면 발행을 멈춘다★ driving 의 두절 타임아웃을 살려 두기
-        #   위한 것이다(헤더 ③절). 여기서 계속 내보내면 차가 낡은 추정으로 달린다.
-        if now - self._fix_t > self.dr_max_s:
+        # ★DR 한도를 넘거나 NO_FIX 를 받았으면 발행을 멈춘다★ GPS 가 끊긴 동안 추측항법으로
+        #   달리지 않는다(헤더 ③절 · [2026-11-05]). driving 은 원시 fix 의 나이로 두절을 본다.
+        if self._no_fix or now - self._fix_t > self.dr_max_s:
             self._log_quality(now, force=False)
             return
 
@@ -1092,9 +888,7 @@ class GpsNode(Node):
             float(dr_dist),                              # [7]
             float(kmh),                                  # [8]
             float(course),                               # [9]
-            float(self._mode),                           # [10]
-            float(self._reject_n),                       # [11]
-            float(self._resid_m),                        # [12]
+            float(self._reject_n),                       # [10]
         ]
         self.pub_fused.publish(msg)
         self._last_pub_t = now
@@ -1117,8 +911,8 @@ class GpsNode(Node):
 
         # ★★ 자이로는 '코스 이후 누적'이고, 여기서 먼저 적분한다 ★★
         # ★[2026-08-18 (3)] 이걸 fix 마다 리셋하던 것이 버그였다★ 종전에는 앵커를
-        #   갱신할 때(=매 fix) 같이 0 으로 되돌렸다. NORMAL(0.2초 간격)에서는 차이가
-        #   없지만, 품질이 나빠 코스가 몇 초간 갱신되지 않는 DEGRADED 에서는
+        #   갱신할 때(=매 fix) 같이 0 으로 되돌렸다. 코스가 매 fix 갱신되면 차이가
+        #   없지만, 코스가 몇 fix 동안 갱신되지 않으면(저속·σ 큼 — COURSE_SIGMA_K)
         #   ★그 사이에 돈 각도가 통째로 사라진다★ — 코스는 낡고 자이로는 매번 0 이
         #   되므로 DR 이 '몇 초 전 방향'으로 직진해 버린다. 코너에서 크게 틀린다.
         #   기준은 ★코스가 갱신될 때만★ 리셋한다(_update_course).
@@ -1179,8 +973,8 @@ class GpsNode(Node):
         text = (f"{Q_EMOJI.get(self._quality, '?')} {Q_LABEL.get(self._quality, '?')} "
                 f"σ={sig} age={age:.2f}s v={kmh:.2f}km/h "
                 f"dr={math.hypot(self._dr_x, self._dr_y):.2f}m "
-                f"[{M_LABEL.get(self._mode, '?')}] "
-                f"기각={self._reject_n} 잔차={self._resid_m:.2f}m "
+                f"{'[NO_FIX — 채움 멈춤] ' if self._no_fix else ''}"
+                f"기각={self._reject_n} "
                 f"{'ok' if self._quality >= self.min_quality else '★게이트 미달★'}")
         self.pub_qual.publish(String(data=text))
         if changed:

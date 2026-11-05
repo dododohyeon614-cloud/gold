@@ -94,6 +94,27 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-11-05 — ★`gps.py` DEGRADED 모드 삭제 · GPS 두절 중 추측항법 삭제 · white3·white1_0929 삭제★ (사용자 지시, white1·white2 공용)
+
+> 사용자 : "실제 주행 중 사용하는 것만 놔둬 — 디그레이드 모드는 삭제, 그리고 DR 모드 추측항법 GPS 신호가 끊길 때 주행하는 코드 삭제
+> (센서가 다 연결 안 되면 주행이 안 되니 필요 없음)" · "필요 없는 건 전부 삭제".
+
+- **`gps.py` DEGRADED 모드** — `DEGRADED_*` 상수 · `degraded_enable`·`degraded_below` 파라미터 · `_update_mode`·`_accept_degraded`·`_median` ·
+  모드·잔차 상태를 지웠다. 기본 꺼짐이라 주행에 쓰이지 않았다. **`/gps_fused` 13 → 11칸** — `[10] mode`·`[12] resid_m` 을 빼고 `reject_n` 이
+  `[10]` 이 됐다(`GPS_FUSED_FIELDS` 11). record(white1·white2) 의 `gps_mode`·`gps_resid_m` 열이 없어진다. driving·hud·mppi 는 `[0]~[9]` 만 읽어 그대로다.
+- **GPS 두절 중 추측항법** — `DR_MAX_S` **1.0 → 0.3 s**(fix 한 주기 0.2 s + 도착 흔들림 0.1 s). fix 사이 0.2 s 채움은 그대로이고, fix 가 늦으면 더
+  외삽하지 않는다. **NO_FIX 를 받으면 그 즉시 채움을 멈춘다**(`_no_fix`) — 종전에는 NO_FIX 뒤에도 quality 0 이 적힌 DR 표본을 1.0 s 동안 냈다
+  (헤더의 'Q_NONE 이면 발행하지 않는다' 와 어긋났다).
+- **검증 (책상, ROS 모듈 대역)** — 수정 전/후 `gps.py` 에 같은 입력(6 m/s · 요레이트 0.15 rad/s 곡선, 5 Hz fix ±20 ms 흔들림, IMU·엔코더 20 Hz) :
+  평상 주행 발행 277건 **전부 같은 값**(옛 [11] ↔ 새 [10]). fix 가 1.6 s 끊기면 옛것은 마지막 fix 뒤 ≈0.8 s 까지 메웠고 새것은 0.3 s 에서 멈춘다.
+  NO_FIX 1.6 s 동안 옛것은 quality 0 표본 15건을 냈고 새것은 0건.
+- ⚠️ **driving 은 그대로다** — `_rtk_hold` 는 원시 fix 가 0.6 s 없고(`RTK_FIX_STALE_S`) 그것이 0.4 s 이어진 뒤(`RTK_LOST_S`) 선다(≈1.0 s).
+  그래서 fix 가 끊긴 뒤 0.3 s ~ 1.0 s 사이에는 위치가 마지막 값에 멈춘 채 조향한다(7펄스면 ≈4.3 m). 더 일찍 세우려면 driving 의
+  `RTK_FIX_STALE_S` 를 내린다 — 사용자 결정 대기.
+- **white3 · white1_0929 삭제** — white3(10/17 주행 코드판) · white1_0929(TODO-1 수정 전 백업)를 저장소에서 지웠다. `paths.STACKS` 에서 white3 를 빼고
+  `.gitignore` 예외 4 를 지웠다. 되살리려면 `git checkout 10b28b7 -- gold_ws/src/white3 gold_ws/src/white1_0929`.
+- ⚠️ 실차 미검증 · `colcon build` 를 다시 해야 반영된다(0.4절).
+
 ## 2026-10-25 — ★L 진입 = 정지선처럼 — 진입 즉시 2단으로 서고 0단 · 1.0 s 뒤 mppi 에 넘긴다★ (사용자 지시, white1·white2 같은 줄)
 
 사용자 : "라이다 구간은 기본 2펄스로 주행하도록 한다. 라이다 진입 즉시 2단정지 후 출발하도록 하자. 정지선처럼."

@@ -4669,8 +4669,8 @@ class DrivingNode(Node):
                     f"확인(ros2 run white1 gps). 정지 유지")
             elif now - self._fused_time > GPS_FUSED_STALE_S:
                 # ★기본 파라미터에서는 이쪽이 정상적인 GPS 두절 경로다★
-                #   gps.py 는 원시 fix 가 dr_max_s(1.0s) 넘게 없으면 발행을 멈추므로,
-                #   fix_time 이 GPS_TIMEOUT_S(2.0s) 를 넘길 무렵엔 배열도 이미 1초쯤
+                #   gps.py 는 원시 fix 가 dr_max_s(0.3s — [2026-11-05] 종전 1.0s) 넘게 없으면 발행을
+                #   멈추므로, fix_time 이 GPS_TIMEOUT_S(2.0s) 를 넘길 무렵엔 배열도 이미 1.7초쯤
                 #   끊겨 있다. 즉 '두절'과 'gps 노드 사망'이 여기서 합쳐진다 —
                 #   구별이 필요하면 `ros2 topic echo /gps_quality` 로 본다 — gps.py 는
                 #   /gps_fused 를 멈춘 뒤에도 그 토픽은 5초 주기로 계속 낸다

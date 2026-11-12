@@ -261,8 +261,8 @@ private:
   /// ★/gps_fused 배열 규약 (white1/white1/gps.py:998 이 정본)★
   ///   [0] lat      [1] lon       [2] quality(0~4) [3] sigma[m]
   ///   [4] pos_ok   [5] is_raw    [6] raw_age[s]   [7] dr_dist[m]
-  ///   [8] kmh      [9] course[deg, ENU 0°=동] [10] mode
-  ///   [11] reject_n [12] resid_m
+  ///   [8] kmh      [9] course[deg, ENU 0°=동] [10] reject_n
+  ///   ([2026-11-05] 13 → 11칸 — [10] mode · [12] resid_m 은 gps.py 에서 지웠다. 이 노드는 [0]~[9] 만 읽는다)
   ///
   /// 1/5카의 /ego_state 는 [lat, lon, x, y, heading, speed, steer, pitch,
   /// terrain] 이었다 — ★자리가 하나도 안 겹친다★. 헤딩만은 정의가 같아서
@@ -274,7 +274,7 @@ private:
     if (msg->data.size() < 10) {
       RCLCPP_WARN_THROTTLE(
           this->get_logger(), *this->get_clock(), 5000,
-          "%s 배열이 %zu개다 — /gps_fused 는 13개여야 한다. 발행자를 확인할 것",
+          "%s 배열이 %zu개다 — /gps_fused 는 11개여야 한다(최소 10). 발행자를 확인할 것",
           ego_topic_.c_str(), msg->data.size());
       return;
     }
